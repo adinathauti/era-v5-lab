@@ -5,13 +5,13 @@ Usage (from teams/06-performance or repo root):
   cd teams/06-performance
   # smoke-cpu (1 process, tiny model, comm payload recorded, timing marked not measured):
   python jobs/run_dryrun1_a2a.py --smoke-cpu --out ../../out
-  # TSAI real run (1 GPU, single process — comm timing not measured, payload recorded):
-  python jobs/run_dryrun1_a2a.py --out out
+  # TSAI real run (2 GPUs via torchrun — required to measure MoE all-to-all comm):
+  python jobs/run_dryrun1_a2a.py --nproc 2 --out out
 
 Config_v1 settings (#447 @ aec75af) applied as overrides on top of base.yaml.
 Null/open model-size values (n_layer, d_model, n_head, d_ff, seq_len, precision) use base.yaml defaults.
-Note: TSAI is currently 1-GPU only. With nproc=1, all-to-all comm timing = "not measured";
-payload (MB/call, calls/step) and step timing are recorded. Multi-GPU a2a latency pending.
+Note: MoE all-to-all comm requires at least 2 ranks. On 1 GPU comm timing = "not measured" (same
+as smoke-cpu). TSAI confirmed 2-GPU run required for a2a logs.
 """
 from __future__ import annotations
 
@@ -101,11 +101,12 @@ def run_job(out: Path, *, smoke_cpu: bool, nproc: int) -> int:
         print(json.dumps(s))
         return proc.returncode
 
-    # TSAI GPU run: single process (nproc=1), base.yaml + config_v1 overrides.
-    # With nproc=1, comm timing = "not measured"; payload and step timing are recorded.
+    # TSAI GPU run: torchrun with nproc GPUs, base.yaml + config_v1 overrides.
+    # Requires nproc >= 2 to measure MoE all-to-all comm; 1 GPU gives "not measured".
     config = PERF_ROOT / "configs" / "base.yaml"
     args = [
-        sys.executable, "-m", "perfkit.bench",
+        "torchrun", f"--nproc_per_node={nproc}",
+        "-m", "perfkit.bench",
         "--config", str(config),
         "--tag", TAG,
         "--modes", "comm",
@@ -121,7 +122,7 @@ def run_job(out: Path, *, smoke_cpu: bool, nproc: int) -> int:
         tag=TAG,
         smoke_cpu=False,
         out=out,
-        nproc=1,
+        nproc=nproc,
         config=str(config.relative_to(REPO_ROOT)),
         config_v1_overrides=CONFIG_V1_OVERRIDES,
         job_overrides=JOB_OVERRIDES,
@@ -136,8 +137,8 @@ def main(argv=None):
     ap.add_argument("--out", default="out", help="output folder (writes only here)")
     ap.add_argument("--smoke-cpu", action="store_true",
                     help="short CPU run for the attached test log (single process, tiny model)")
-    ap.add_argument("--nproc", type=int, default=1,
-                    help="--nproc_per_node for GPU run (default 1; TSAI is 1-GPU only)")
+    ap.add_argument("--nproc", type=int, default=2,
+                    help="--nproc_per_node for torchrun GPU run (default 2; must be >= 2 to measure a2a comm)")
     a = ap.parse_args(argv)
     out = Path(a.out).resolve()
     if out.name != "out" and "out" not in out.parts:
